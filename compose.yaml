@@ -1,0 +1,66 @@
+version: "3.11.13"
+
+services:
+  # Frontend Service
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+    depends_on:
+      - backend
+
+  # Backend Service
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - db
+
+  # Database Service
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: digital_twin
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+  # LinkedIn Crawler Service
+  linkedin_crawler:
+    build:
+      context: ./linkedin_crawler
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - db
+
+  # Wikipedia Crawler Service
+  wikipedia_crawler:
+    build:
+      context: ./wikipedia_crawler
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - db
+
+  # PDF Crawler Service
+  pdf_crawler:
+    build:
+      context: ./pdf_crawler
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - db
+
+volumes:
+  db-data:
