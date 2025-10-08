@@ -14,6 +14,10 @@ from PIL import Image
 import pytesseract
 from tqdm.auto import tqdm
 
+# >>> NEW: MongoDB & time
+from pymongo import MongoClient
+from datetime import datetime
+
 
 class PDFTextExtractor:
     def __init__(self, tesseract_cmd: str = "/usr/bin/tesseract"):
@@ -114,35 +118,6 @@ class PDFTextExtractor:
     ) -> Union[str, List[Dict[str, Union[int, str]]]]:
         """
         Yüksek performanslı PDF → metin dönüşümü (OCR destekli, Türkçe uyumlu)
-
-        Parametreler
-        ----------
-        pdf_path : str
-            Giriş PDF dosya yolu
-        password : str | None
-            Şifreli PDF'ler için parola
-        preserve_layout : bool
-            True ise blok tabanlı okuma (çok sütunlu sayfalar için daha iyi)
-        use_ocr : bool
-            True ise, doğal metin uzunluğu threshold'dan az olan sayfalar OCR ile işlenir
-        ocr_lang : str
-            Tesseract dil kodları, örn. "tur+eng"
-        ocr_threshold_chars : int
-            Doğal metin uzunluğu bu değerden az ise OCR uygulanır
-        ocr_dpi : int
-            OCR için görüntü çözünürlüğü (300 iyi kalite/hız dengesi)
-        max_ocr_workers : int | None
-            Paralel OCR işçi proses sayısı (None = CPU sayısı)
-        return_pages : bool
-            True ise [{"page": N, "text": "..."}] listesi döndürür
-            False ise tüm doküman metnini döndürür
-        show_progress : bool
-            True ise ilerleme çubuğu gösterir
-
-        Returns
-        -------
-        str or List[Dict[str, Union[int, str]]]
-            Tüm doküman metni veya sayfa bazlı kayıtlar
         """
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
@@ -249,9 +224,57 @@ class PDFTextExtractor:
             print(f"✅ JSONL dosyası kaydedildi: {output_path}")
 
 
+# >>> NEW: Mongo helper
+def save_person_to_mongo(
+    mongo_uri: str,
+    db_name: str,
+    coll_name: str,
+    ad: str,
+    site: str,
+    url: str,
+    raw_text: str,
+    aciklama: str = "PDF’ten çıkarılan metin"
+):
+    """
+    Kişiyi yoksa ekler, varsa kaynaklar listesine yeni kaynak ekler ve raw_text'i günceller.
+    """
+    if not ad or not site:
+        raise ValueError("ad ve site zorunludur")
+
+    client = MongoClient(mongo_uri)
+    col = client[db_name][coll_name]
+    # ad alanını benzersiz yapmak istersen ilk çalıştırmada şu satırı aç:
+    # col.create_index({"ad": 1}, unique=True)
+
+    src = {
+        "site": site,
+        "url": url,
+        "aciklama": aciklama,
+        "eklenmeTarihi": datetime.utcnow()
+    }
+
+    doc = col.find_one({"ad": ad})
+    if doc is None:
+        col.insert_one({
+            "ad": ad,
+            "kaynaklar": [src],
+            "raw_text": raw_text
+        })
+        print(f"✅ MongoDB: yeni kişi eklendi → {ad}")
+    else:
+        col.update_one(
+            {"_id": doc["_id"]},
+            {
+                "$push": {"kaynaklar": src},
+                "$set": {"raw_text": raw_text}
+            }
+        )
+        print(f"✅ MongoDB: mevcut kişiye kaynak eklendi → {ad}")
+
+
 def main():
     """Komut satırı arayüzü"""
-    parser = argparse.ArgumentParser(description='PDF\'ten metin çıkarıcı (Türkçe OCR destekli)')
+    parser = argparse.ArgumentParser(description="PDF'ten metin çıkarıcı (Türkçe OCR destekli)")
     parser.add_argument('input_pdf', help='Giriş PDF dosyası')
     parser.add_argument('-o', '--output', help='Çıktı dosyası (otomatik belirlenmezse)')
     parser.add_argument('--password', help='PDF şifresi (gerekliyse)')
@@ -271,6 +294,17 @@ def main():
                         help='OCR DPI (varsayılan: 300)')
     parser.add_argument('--workers', type=int,
                         help='Paralel işçi sayısı (varsayılan: CPU sayısı)')
+
+    # >>> NEW: Mongo seçenekleri
+    parser.add_argument('--mongo', action='store_true',
+                        help='İşlenen metni MongoDB’ye kaydet')
+    parser.add_argument('--person', help='Kişi adı (MongoDB için zorunlu)')
+    parser.add_argument('--site', help='Kaynağın site alanı (MongoDB için)')
+    parser.add_argument('--url', default='', help='Kaynağın URL alanı (opsiyonel)')
+    parser.add_argument('--mongo-uri', default='mongodb://localhost:27017',
+                        help='Mongo bağlantı URI (varsayılan: mongodb://localhost:27017)')
+    parser.add_argument('--db', default='people', help='MongoDB database adı (varsayılan: people)')
+    parser.add_argument('--coll', default='names', help='MongoDB koleksiyon adı (varsayılan: names)')
 
     args = parser.parse_args()
 
@@ -298,8 +332,39 @@ def main():
         show_progress=True,
     )
 
-    # Kaydet
-    extractor.save_output(result, output_path)
+    # JSONL istendi ise dosyaya yaz
+    if args.jsonl:
+        extractor.save_output(result, output_path)
+        # Mongo'ya ham sayfa sayfa eklemek yerine birleştirilmiş metni de eklemek isteyebilirsin:
+        merged_text = "\n\n".join(rec["text"] for rec in result)  # type: ignore
+        if args.mongo:
+            if not args.person or not args.site:
+                raise SystemExit("MongoDB için --person ve --site zorunlu.")
+            save_person_to_mongo(
+                mongo_uri=args.mongo_uri,
+                db_name=args.db,
+                coll_name=args.coll,
+                ad=args.person,
+                site=args.site,
+                url=args.url or "",
+                raw_text=merged_text
+            )
+    else:
+        # result str ise tek dosya yaz
+        extractor.save_output(result, output_path)
+        if args.mongo:
+            if not args.person or not args.site:
+                raise SystemExit("MongoDB için --person ve --site zorunlu.")
+            # result burada str
+            save_person_to_mongo(
+                mongo_uri=args.mongo_uri,
+                db_name=args.db,
+                coll_name=args.coll,
+                ad=args.person,
+                site=args.site,
+                url=args.url or "",
+                raw_text=result  # type: ignore
+            )
 
 
 if __name__ == "__main__":
