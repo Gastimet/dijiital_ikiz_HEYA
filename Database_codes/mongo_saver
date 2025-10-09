@@ -1,0 +1,133 @@
+# -*- coding: utf-8 -*-
+import os
+from datetime import datetime
+from typing import List, Optional, Dict, Any
+
+from pymongo import MongoClient, errors
+
+
+# Ortak bağlantı yardımcıları
+def _get_collection(
+    mongo_uri: Optional[str],
+    db_name: str,
+    coll_name: str
+):
+    uri = mongo_uri or os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
+    client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+    # bağlantı test
+    client.admin.command("ping")
+    col = client[db_name][coll_name]
+    return col
+
+
+# 1) Wikipedia makalesi kaydı (WikiCrawler için)
+def save_wiki_article(
+    title: str,
+    url: str,
+    paragraphs: List[str],
+    mongo_uri: Optional[str] = None,
+    db_name: str = "wikipedia",
+    coll_name: str = "articles"
+) -> Dict[str, Any]:
+    """
+    Aynı URL için upsert yapar; yoksa ekler.
+    Şema:
+      {
+        title: <string>,
+        url: <string unique>,
+        paragraphs: [<string>],
+        paragraph_count: <int>,
+        fetched_at: <UTC datetime>
+      }
+    """
+    if not title or not url:
+        raise ValueError("save_wiki_article: 'title' ve 'url' zorunludur")
+
+    col = _get_collection(mongo_uri, db_name, coll_name)
+
+    # Faydalı indexler (ilk çalıştırmada oluşturulur, idempotent)
+    try:
+        col.create_index("url", unique=True)
+        col.create_index([("title", 1), ("fetched_at", -1)])
+    except errors.PyMongoError:
+        pass
+
+    doc = {
+        "title": title,
+        "url": url,
+        "paragraphs": paragraphs,
+        "paragraph_count": len(paragraphs),
+        "fetched_at": datetime.utcnow(),
+    }
+
+    try:
+        res = col.update_one({"url": url}, {"$set": doc}, upsert=True)
+        return {
+            "status": "upserted" if res.upserted_id else "updated",
+            "upserted_id": str(res.upserted_id) if res.upserted_id else None
+        }
+    except errors.PyMongoError as e:
+        return {"status": "error", "error": str(e)}
+
+
+# 2) PDF’ten kişi metni kaydı (PDFTextExtractor için)
+def save_person_text(
+    ad: str,
+    site: str,
+    raw_text: str,
+    url: str = "",
+    aciklama: str = "PDF’ten çıkarılan metin",
+    mongo_uri: Optional[str] = None,
+    db_name: str = "people",
+    coll_name: str = "names"
+) -> Dict[str, Any]:
+    """
+    Kişi dokümanı yoksa ekler; varsa kaynaklar listesine yeni bir kaynak push eder
+    ve raw_text'i günceller.
+    Şema:
+      {
+        ad: <string>,
+        kaynaklar: [{site, url, aciklama, eklenmeTarihi}],
+        raw_text: <string>,
+        updated_at: <UTC datetime>
+      }
+    """
+    if not ad or not site:
+        raise ValueError("save_person_text: 'ad' ve 'site' zorunludur")
+
+    col = _get_collection(mongo_uri, db_name, coll_name)
+
+    # ad alanına index isterseniz (opsiyonel)
+    try:
+        col.create_index([("ad", 1)])
+    except errors.PyMongoError:
+        pass
+
+    src = {
+        "site": site,
+        "url": url,
+        "aciklama": aciklama,
+        "eklenmeTarihi": datetime.utcnow()
+    }
+
+    try:
+        doc = col.find_one({"ad": ad})
+        if doc is None:
+            col.insert_one({
+                "ad": ad,
+                "kaynaklar": [src],
+                "raw_text": raw_text,
+                "updated_at": datetime.utcnow()
+            })
+            return {"status": "inserted", "ad": ad}
+        else:
+            col.update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$push": {"kaynaklar": src},
+                    "$set": {"raw_text": raw_text, "updated_at": datetime.utcnow()}
+                }
+            )
+            return {"status": "appended", "ad": ad}
+    except errors.PyMongoError as e:
+        return {"status": "error", "error": str(e)}
