@@ -7,8 +7,6 @@ import time
 import lxml
 import lxml.html
 
-from mongo_saver import save_wiki_article  # <<< EKLENDİ
-
 class WikiCrawler():
     def __init__(self):
         super().__init__()
@@ -69,16 +67,6 @@ class WikiCrawler():
 
         intro = '\n'.join(paragraphs[:3])
         print(intro)
-
-        # <<< MONGO KAYIT
-        save_wiki_article(
-            title=article.strip(),
-            url=url,
-            paragraphs=paragraphs,
-            # mongo_uri="mongodb://localhost:27017",
-            db_name="wikipedia",
-            coll_name="articles"
-        )
 
         self.again()
         return paragraphs
