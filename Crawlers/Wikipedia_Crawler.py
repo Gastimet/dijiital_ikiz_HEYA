@@ -115,6 +115,9 @@ class WikiCrawler():
             print("Sayfa bos !")
             self.again()
             return
+
+        intro = '\n'.join(paragraphs[:3])
+        
         save_wiki_article(
             title=article.strip(),
             url=url,
@@ -123,7 +126,7 @@ class WikiCrawler():
             db_name="wikipedia",
             coll_name="articles"
         )
-        intro = '\n'.join(paragraphs[:3])
+    
         print(intro)
         self.again()
 
