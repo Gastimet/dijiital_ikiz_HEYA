@@ -6,6 +6,7 @@ from datetime import datetime
 import time
 import lxml
 import lxml.html
+from mongo_saver import save_wiki_article
 
 class WikiCrawler():
     def __init__(self):
@@ -114,7 +115,14 @@ class WikiCrawler():
             print("Sayfa bos !")
             self.again()
             return
-
+        save_wiki_article(
+            title=article.strip(),
+            url=url,
+            paragraphs=paragraphs,
+            # mongo_uri="mongodb://localhost:27017",  # istersen belirt
+            db_name="wikipedia",
+            coll_name="articles"
+        )
         intro = '\n'.join(paragraphs[:3])
         print(intro)
         self.again()
