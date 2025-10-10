@@ -1,246 +1,283 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
 import threading
 import time
-import json
-import os
-from datetime import datetime
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pymongo import MongoClient, errors
 
-class DarkCrawlerGUI:
+# ==== MongoDB Ayarları ====
+MONGO_URI = "mongodb://localhost:27017"
+DB_NAME = "web_crawler"
+COLL_NAME = "persons"
+
+
+class ModernWebCrawlerUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Web Crawler - Dark Mode")
-        self.root.geometry("600x500")
-        self.root.configure(bg='black')
-        
-        # Crawling durumu
-        self.is_crawling = False
-        self.active_crawlers = 0
-        
-        self.setup_dark_theme()
+        self.root.title("Web Crawler")
+        self.root.geometry("1200x800")
+        self.root.configure(bg='#1e1e1e')
+
+        self.mongo_client = None
+        self.mongo_db = None
+        self.mongo_coll = None
+
+        self.colors = {
+            'bg': '#1e1e1e', 'card_bg': '#2d2d2d', 'accent': '#007acc',
+            'success': '#00d26a', 'warning': '#ffa500', 'error': '#ff4444',
+            'info': '#00bfff', 'text': '#ffffff', 'text_secondary': '#cccccc',
+            'button_primary': '#007acc', 'button_secondary': '#6c757d',
+            'button_success': '#28a745', 'button_danger': '#dc3545',
+            'log_bg': '#1a1a1a', 'log_even': '#1f1f1f', 'log_odd': '#242424',
+            'log_number': '#ffd700', 'log_time': '#00ff00',
+            'log_success': '#90ee90', 'log_error': '#ff6b6b',
+            'log_warning': '#ffd700', 'log_info': '#87ceeb'
+        }
+
         self.setup_ui()
-        
-    def setup_dark_theme(self):
+        self._init_mongo()
+
+    # ----------------- MongoDB -----------------
+    def _init_mongo(self):
+        try:
+            self.mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
+            self.mongo_client.admin.command("ping")
+            self.mongo_db = self.mongo_client[DB_NAME]
+            self.mongo_coll = self.mongo_db[COLL_NAME]
+            try:
+                self.mongo_coll.create_index("person", background=True)
+            except Exception:
+                pass
+            self.add_log(f"MongoDB bağlandı → {DB_NAME}.{COLL_NAME}", "success", "🟢")
+        except Exception as e:
+            self.mongo_client = None
+            self.mongo_db = None
+            self.mongo_coll = None
+            self.add_log(f"MongoDB bağlantı hatası: {e}", "error", "🔴")
+            messagebox.showerror("MongoDB", f"Bağlantı kurulamadı:\n{e}")
+
+    # ----------------- UI -----------------
+    def setup_ui(self):
+        title_frame = tk.Frame(self.root, bg=self.colors['card_bg'])
+        title_frame.pack(fill='x', padx=20, pady=15)
+        tk.Label(title_frame, text="Web Crawler", font=('Arial', 24, 'bold'),
+                 fg=self.colors['accent'], bg=self.colors['card_bg'], pady=12).pack()
+
+        top_frame = tk.Frame(self.root, bg=self.colors['bg'])
+        top_frame.pack(fill='x', padx=20, pady=10)
+        left_frame = tk.Frame(top_frame, bg=self.colors['bg'])
+        left_frame.pack(side='left', fill='both', expand=True)
+        right_frame = tk.Frame(top_frame, bg=self.colors['bg'])
+        right_frame.pack(side='right', fill='both', expand=True)
+
+        self.setup_person_sources_section(left_frame)
+        self.setup_progress_section(right_frame)
+        self.setup_buttons()
+        self.setup_logs_section()
+
+    def setup_person_sources_section(self, parent):
+        main_frame = tk.LabelFrame(parent, text=" Ayarlar", font=('Arial', 12, 'bold'),
+                                   fg=self.colors['text'], bg=self.colors['card_bg'],
+                                   bd=2, relief='flat', highlightbackground=self.colors['accent'],
+                                   highlightthickness=2)
+        main_frame.pack(fill='both', expand=True)
+
+        person_frame = tk.Frame(main_frame, bg=self.colors['card_bg'])
+        person_frame.pack(fill='x', padx=15, pady=12)
+        tk.Label(person_frame, text="Kişi İsmi:", font=('Arial', 11, 'bold'),
+                 fg=self.colors['text'], bg=self.colors['card_bg'], anchor='w').pack(fill='x', pady=(0, 5))
+        self.person_name = tk.Entry(person_frame, font=('Arial', 11), bg='#3d3d3d',
+                                    fg=self.colors['text'], insertbackground=self.colors['text'],
+                                    relief='flat', bd=2)
+        self.person_name.pack(fill='x', pady=5)
+        self.person_name.insert(0, "Sadık")
+
+        tk.Frame(main_frame, bg='#444444', height=1).pack(fill='x', padx=10, pady=8)
+
+        sources_title_frame = tk.Frame(main_frame, bg=self.colors['card_bg'])
+        sources_title_frame.pack(fill='x', padx=15, pady=(0, 8))
+        tk.Label(sources_title_frame, text="Veri Kaynakları:", font=('Arial', 11, 'bold'),
+                 fg=self.colors['text'], bg=self.colors['card_bg'], anchor='w').pack(fill='x')
+
+        sources = [
+            ("📄", "PDF Derleyen"),
+            ("🌐", "Wikipedia"),
+            ("🐦", "Twitter"),
+            ("💼", "LinkedIn"),
+            ("🔍", "OCR To Text"),
+            ("📺", "YouTube")
+        ]
+
+        self.source_entries = {}
+        sources_inner_frame = tk.Frame(main_frame, bg=self.colors['card_bg'])
+        sources_inner_frame.pack(fill='x', padx=15, pady=8)
+
+        placeholders = {
+            "PDF Derleyen": "PDF dosya yolu veya URL",
+            "Wikipedia": "Wikipedia sayfa bağlantısı",
+            "Twitter": "Twitter kullanıcı adı veya URL",
+            "LinkedIn": "LinkedIn profil bağlantısı",
+            "OCR To Text": "OCR için görsel dosya yolu",
+            "YouTube": "YouTube kanal URL'si veya video linki"
+        }
+
+        for icon, text in sources:
+            source_frame = tk.Frame(sources_inner_frame, bg=self.colors['card_bg'])
+            source_frame.pack(fill='x', pady=4)
+            tk.Label(source_frame, text=f"{icon} {text}:", font=('Arial', 10, 'bold'),
+                     fg=self.colors['text'], bg=self.colors['card_bg'], width=15, anchor='w').pack(side='left', padx=(0, 10))
+
+            entry = tk.Entry(source_frame, font=('Arial', 10), bg='#3d3d3d', fg=self.colors['text'],
+                             insertbackground=self.colors['text'], relief='flat', bd=1)
+            entry.pack(side='left', fill='x', expand=True, padx=5)
+
+            if text in placeholders:
+                entry.insert(0, placeholders[text])
+                entry.config(fg=self.colors['text_secondary'])
+
+                def on_focus_in(event, e=entry, default_text=placeholders[text]):
+                    if e.get() == default_text:
+                        e.delete(0, tk.END)
+                        e.config(fg=self.colors['text'])
+
+                def on_focus_out(event, e=entry, default_text=placeholders[text]):
+                    if not e.get():
+                        e.insert(0, default_text)
+                        e.config(fg=self.colors['text_secondary'])
+
+                entry.bind('<FocusIn>', on_focus_in)
+                entry.bind('<FocusOut>', on_focus_out)
+
+            self.source_entries[text] = entry
+
+    def setup_progress_section(self, parent):
+        progress_frame = tk.LabelFrame(parent, text=" Tarama İlerlemesi", font=('Arial', 12, 'bold'),
+                                       fg=self.colors['text'], bg=self.colors['card_bg'], bd=2, relief='flat',
+                                       highlightbackground=self.colors['accent'], highlightthickness=2)
+        progress_frame.pack(fill='both', expand=True, padx=(10, 0))
+        inner = tk.Frame(progress_frame, bg=self.colors['card_bg'])
+        inner.pack(fill='both', expand=True, padx=12, pady=12)
+        header = tk.Frame(inner, bg=self.colors['card_bg'])
+        header.pack(fill='x', pady=5)
+        tk.Label(header, text="Durum:", font=('Arial', 10, 'bold'),
+                 fg=self.colors['text'], bg=self.colors['card_bg']).pack(side='left')
+        self.status_text = tk.Label(header, text="0/361 tamamlandı", font=('Arial', 10, 'bold'),
+                                    fg=self.colors['warning'], bg=self.colors['card_bg'])
+        self.status_text.pack(side='right')
         style = ttk.Style()
         style.theme_use('clam')
-        
-        # Dark theme colors
-        style.configure('.', background='black', foreground='white')
-        style.configure('TFrame', background='black')
-        style.configure('TLabel', background='black', foreground='white')
-        style.configure('TButton', background='#333333', foreground='white')
-        style.configure('TEntry', fieldbackground='#333333', foreground='white')
-        style.configure('TCheckbutton', background='black', foreground='white')
-        style.configure('TProgressbar', background='#0066cc', troughcolor='#333333')
-        
-    def setup_ui(self):
-        # Ana frame
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Üst kısım - Kontroller
-        control_frame = ttk.Frame(main_frame)
-        control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        # Kişi ismi girişi
-        ttk.Label(control_frame, text="Kişi İsmi:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.name_entry = ttk.Entry(control_frame, width=40)
-        self.name_entry.grid(row=0, column=1, columnspan=2, sticky=(tk.W, tk.E), pady=5, padx=(5, 0))
-        
-        # Site seçimleri
-        ttk.Label(control_frame, text="Hedef Siteler:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        
-        sites_frame = ttk.Frame(control_frame)
-        sites_frame.grid(row=1, column=1, columnspan=2, sticky=(tk.W, tk.E), pady=5)
-        
-        self.site_vars = {}
-        sites = [
-            ("PDF Dosyaları", "pdf"),
-            ("Wikipedia", "wikipedia"),
-            ("Twitter", "twitter"),
-            ("LinkedIn", "linkedin"),
-            ("OCR to Text", "ocr")
-        ]
-        
-        for i, (site_name, site_key) in enumerate(sites):
-            var = tk.BooleanVar()
-            chk = ttk.Checkbutton(sites_frame, text=site_name, variable=var)
-            chk.grid(row=0, column=i, sticky=tk.W, padx=(0, 15))
-            self.site_vars[site_key] = var
-        
-        # Butonlar
-        button_frame = ttk.Frame(control_frame)
-        button_frame.grid(row=2, column=0, columnspan=3, pady=15)
-        
-        self.start_btn = ttk.Button(button_frame, text="Taramayı Başlat", command=self.start_crawling)
-        self.start_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.stop_btn = ttk.Button(button_frame, text="Taramayı Durdur", command=self.stop_crawling, state=tk.DISABLED)
-        self.stop_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.download_btn = ttk.Button(button_frame, text="Sonuçları İndir", command=self.download_results)
-        self.download_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Aktif tarama sayısı
-        status_frame = ttk.Frame(control_frame)
-        status_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=10)
-        
-        self.active_label = ttk.Label(status_frame, text="Aktif tarama sayısı: 0", foreground="#00ff00")
-        self.active_label.pack(side=tk.LEFT)
-        
-        # Progress bar
-        self.progress = ttk.Progressbar(control_frame, mode='indeterminate')
-        self.progress.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
-        
-        # Ayrıcı çizgi
-        separator = ttk.Separator(main_frame, orient='horizontal')
-        separator.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=10)
-        
-        # Alt kısım - Log alanı (EN AŞAĞIDA)
-        log_frame = ttk.Frame(main_frame)
-        log_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(10, 0))
-        
-        ttk.Label(log_frame, text="İşlem Logları:", font=('Arial', 10, 'bold')).pack(anchor=tk.W)
-        
-        # Log text alanı
-        log_text_frame = ttk.Frame(log_frame)
-        log_text_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
-        
-        self.log_text = tk.Text(
-            log_text_frame, 
-            height=15, 
-            width=70,
-            bg='#1a1a1a',
-            fg='#00ff00',
-            insertbackground='white',
-            selectbackground='#0066cc',
-            font=('Consolas', 9)
-        )
-        
-        scrollbar = ttk.Scrollbar(log_text_frame, orient=tk.VERTICAL, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=scrollbar.set)
-        
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Grid configuration
-        control_frame.columnconfigure(1, weight=1)
-        main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(2, weight=1)  # Log alanı genişlesin
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-        
-    def log_message(self, message):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
-        self.log_text.see(tk.END)
-        self.root.update()
-        
-    def start_crawling(self):
-        name = self.name_entry.get().strip()
-        if not name:
-            messagebox.showerror("Hata", "Lütfen bir isim giriniz.")
-            return
-            
-        selected_sites = [site for site, var in self.site_vars.items() if var.get()]
-        if not selected_sites:
-            messagebox.showerror("Hata", "Lütfen en az bir site seçiniz.")
-            return
-        
-        self.is_crawling = True
-        self.active_crawlers = len(selected_sites)
-        self.update_ui_state()
-        
-        self.log_message("═" * 50)
-        self.log_message(f"🎯 TARAMA BAŞLATILDI: {name}")
-        self.log_message(f"📡 HEDEF SİTELER: {', '.join(selected_sites).upper()}")
-        self.log_message("═" * 50)
-        
-        # Simüle edilmiş crawling işlemi
-        self.crawling_thread = threading.Thread(target=self.simulate_crawling, args=(name, selected_sites))
-        self.crawling_thread.daemon = True
-        self.crawling_thread.start()
-        
-    def stop_crawling(self):
-        self.is_crawling = False
-        self.log_message("🛑 TARAMA DURDURULUYOR...")
-        self.update_ui_state()
-        
-    def download_results(self):
-        filename = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("Text files", "*.txt"), ("All files", "*.*")]
-        )
-        if filename:
-            # Örnek veri oluştur
-            sample_data = {
-                "name": self.name_entry.get(),
-                "crawled_at": datetime.now().isoformat(),
-                "results": {
-                    "pdf": ["document1.pdf", "document2.pdf"],
-                    "wikipedia": ["Wikipedia entry found"],
-                    "twitter": ["Recent tweets extracted"],
-                    "linkedin": ["Profile information gathered"],
-                    "ocr": ["Text extracted from images"]
-                }
-            }
-            
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(sample_data, f, ensure_ascii=False, indent=2)
-            
-            self.log_message(f"💾 SONUÇLAR İNDİRİLDİ: {filename}")
-            messagebox.showinfo("Başarılı", f"Sonuçlar {filename} dosyasına kaydedildi.")
-        
-    def simulate_crawling(self, name, sites):
-        self.progress.start()
-        
-        for i, site in enumerate(sites):
-            if not self.is_crawling:
-                break
-                
-            self.log_message(f"🔍 {site.upper()} TARAMASI BAŞLADI...")
-            
-            # Simüle edilmiş tarama süresi
-            for step in range(5):
-                if not self.is_crawling:
-                    break
-                time.sleep(1)
-                progress_percent = (step + 1) * 20
-                self.log_message(f"   📊 {site}: %{progress_percent} tamamlandı")
-            
-            if self.is_crawling:
-                self.log_message(f"✅ {site.upper()} TARAMASI TAMAMLANDI")
-                self.active_crawlers -= 1
-                self.update_active_count()
-        
-        self.progress.stop()
-        self.is_crawling = False
-        self.update_ui_state()
-        
-        if self.active_crawlers == 0:
-            self.log_message("🎉 TÜM TARAMALAR BAŞARIYLA TAMAMLANDI!")
-            self.log_message("═" * 50)
-        
-    def update_ui_state(self):
-        if self.is_crawling:
-            self.start_btn.config(state=tk.DISABLED)
-            self.stop_btn.config(state=tk.NORMAL)
-            self.download_btn.config(state=tk.DISABLED)
-            self.active_label.config(foreground="#ff9900")  # Turuncu
-        else:
-            self.start_btn.config(state=tk.NORMAL)
-            self.stop_btn.config(state=tk.DISABLED)
-            self.download_btn.config(state=tk.NORMAL)
-            self.active_label.config(foreground="#00ff00")  # Yeşil
-            
-    def update_active_count(self):
-        self.active_label.config(text=f"Aktif tarama sayısı: {self.active_crawlers}")
-        self.root.update()
+        style.configure("Custom.Horizontal.TProgressbar", background=self.colors['success'],
+                        troughcolor='#3d3d3d', bordercolor=self.colors['accent'],
+                        lightcolor=self.colors['success'], darkcolor=self.colors['success'])
+        self.progress = ttk.Progressbar(inner, orient='horizontal', mode='determinate', maximum=361,
+                                        style="Custom.Horizontal.TProgressbar")
+        self.progress.pack(fill='x', pady=8)
+        self.progress['value'] = 0
 
-def main():
-    root = tk.Tk()
-    app = DarkCrawlerGUI(root)
-    root.mainloop()
+    def setup_buttons(self):
+        button_frame = tk.Frame(self.root, bg=self.colors['bg'])
+        button_frame.pack(pady=15)
+        buttons = [
+            ("🚀 Başlat", self.start_crawl, self.colors['button_success'], 14),
+            ("🔄 Yeniden Başlat", self.restart_crawl, self.colors['button_primary'], 12),
+            ("⏹️ Durdur", self.stop_crawl, self.colors['button_danger'], 12),
+            ("📊 Rapor Al", self.generate_report, self.colors['button_secondary'], 12),
+            ("💾 Veri Tabanına Ekle", self.add_to_database, self.colors['info'], 12)
+        ]
+        for text, command, color, font_size in buttons:
+            btn = tk.Button(button_frame, text=text, command=command, font=('Arial', font_size, 'bold'),
+                            bg=color, fg='white', relief='raised', bd=0, padx=20, pady=10, cursor='hand2')
+            btn.pack(side='left', padx=8, pady=5)
+            btn.bind("<Enter>", lambda e, b=btn: b.config(bg=self.lighten_color(b['bg'])))
+            btn.bind("<Leave>", lambda e, b=btn, c=color: b.config(bg=c))
+
+    def setup_logs_section(self):
+        logs_frame = tk.LabelFrame(self.root, text=" 📋 İşlem Logları", font=('Arial', 14, 'bold'),
+                                   fg=self.colors['text'], bg=self.colors['card_bg'], bd=2, relief='flat',
+                                   highlightbackground=self.colors['accent'], highlightthickness=2)
+        logs_frame.pack(fill='both', expand=True, padx=20, pady=(10, 20))
+        container = tk.Frame(logs_frame, bg=self.colors['card_bg'])
+        container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        scrollbar = ttk.Scrollbar(container)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_canvas = tk.Canvas(container, bg=self.colors['log_bg'], yscrollcommand=scrollbar.set,
+                                    highlightthickness=0, relief='flat')
+        self.log_canvas.pack(side=tk.LEFT, fill='both', expand=True)
+        scrollbar.config(command=self.log_canvas.yview)
+        self.logs_inner_frame = tk.Frame(self.log_canvas, bg=self.colors['log_bg'])
+        self.log_canvas_window = self.log_canvas.create_window((0, 0), window=self.logs_inner_frame, anchor="nw")
+        self.logs_inner_frame.bind("<Configure>", lambda e: self.log_canvas.configure(scrollregion=self.log_canvas.bbox("all")))
+        self.log_canvas.bind("<Configure>", lambda e: self.log_canvas.itemconfig(self.log_canvas_window, width=e.width))
+        self.add_log("Uygulama başlatıldı", "info", "🟢")
+
+    # ----------------- Yardımcı fonksiyonlar -----------------
+    def lighten_color(self, color):
+        if color == self.colors['button_primary']: return '#3399ff'
+        if color == self.colors['button_success']: return '#34ce57'
+        if color == self.colors['button_danger']: return '#e04b59'
+        if color == self.colors['info']: return '#33ccff'
+        return '#868e96'
+
+    def add_log(self, message, status="normal", icon="⏱️"):
+        now = datetime.now().strftime("%H:%M:%S")
+        lbl = tk.Label(self.logs_inner_frame, text=f"{now} {icon} {message}", anchor='w',
+                       font=('Consolas', 10), fg=self.colors['text_secondary'], bg=self.colors['log_bg'])
+        lbl.pack(fill='x', padx=5, pady=2)
+        self.log_canvas.update_idletasks()
+        self.log_canvas.yview_moveto(1.0)
+
+    # ----------------- İşlevler -----------------
+    def start_crawl(self):
+        person_name = self.person_name.get().strip()
+        if not person_name:
+            messagebox.showwarning("Uyarı", "Lütfen kişi ismini girin!")
+            return
+
+        self.add_log(f"Kullanıcı: {person_name} - Tarama başlatılıyor...", "info", "🚀")
+        self.progress['value'] = 0
+        self.status_text.config(text="0/361 tamamlandı", fg=self.colors['warning'])
+        messagebox.showinfo("Başlatılıyor", f"Kişi: {person_name}\n\nTarama işlemi başlatılıyor...")
+
+        # >>> BURASI EKLENDİ: pdf.py ve crawler_mongodb.py çalıştırılıyor <<<
+        def run_scripts():
+            try:
+                self.add_log("pdf.py başlatılıyor...", "info", "📄")
+                subprocess.Popen([sys.executable, "pdf.py"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+                self.add_log("crawler_mongodb.py başlatılıyor...", "info", "🌐")
+                subprocess.Popen([sys.executable, "crawler_mongodb.py"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+                self.add_log("Tüm crawler işlemleri başlatıldı.", "success", "✅")
+            except Exception as e:
+                self.add_log(f"Script başlatma hatası: {e}", "error", "❌")
+                messagebox.showerror("Hata", f"Script başlatılamadı:\n{e}")
+
+        threading.Thread(target=run_scripts, daemon=True).start()
+
+    def restart_crawl(self):
+        self.progress['value'] = 0
+        self.status_text.config(text="0/361 tamamlandı", fg=self.colors['warning'])
+        self.add_log("Tarama yeniden başlatılıyor...", "warning", "🔄")
+
+    def stop_crawl(self):
+        self.progress['value'] = 180
+        self.status_text.config(text="180/361 durduruldu", fg=self.colors['warning'])
+        self.add_log("Tarama işlemi kullanıcı tarafından durduruldu", "error", "⏹️")
+
+    def generate_report(self):
+        self.add_log("Rapor oluşturuluyor...", "info", "📊")
+        messagebox.showinfo("Rapor", "Rapor hazırlanıyor...")
+
+    def add_to_database(self):
+        if self.mongo_client is None or self.mongo_db is None or self.mongo_coll is None:
+            self.add_log("Mongo bağlantısı yok; kayıt yapılamadı.", "error", "🔴")
+            messagebox.showerror("MongoDB", "Bağlantı yok.")
+            return
+
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = ModernWebCrawlerUI(root)
+    root.mainloop()
