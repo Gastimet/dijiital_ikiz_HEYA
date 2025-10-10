@@ -6,6 +6,7 @@ from datetime import datetime
 import time
 import lxml
 import lxml.html
+from pymongo import MongoClient
 
 class WikiCrawler():
     def __init__(self):
@@ -38,7 +39,8 @@ class WikiCrawler():
         return '_'.join(kelime_buyut(k) for k in text.split())
 
     def main(self):
-        article = input("Hangi makaleyi çekmek istersin? : ")
+        doc = MongoClient()["web_crawler"]["persons"].find_one(sort=[('_id', -1)])
+        article = doc["sources"]["Wikipedia"]
         article = self.turkce_baslik_formatla(article)
         url = f"https://tr.wikipedia.org/wiki/{article}"
         print("Bilgiler cekiliyor, lutfen bekleyiniz")
