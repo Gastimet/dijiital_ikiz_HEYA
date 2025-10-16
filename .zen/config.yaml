@@ -1,2 +1,41 @@
 active_project_id: null
 active_stack_id: null
+enable_cache: true
+enable_step_logs: true
+parameters:
+  source_urls:
+  - https://example.com
+  write_to_db: true
+run_name: heya_{date}_{time}
+settings:
+  docker:
+    copy_files: true
+    dockerfile: ./Dockerfile
+    dockerignore: .dockerignore
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      PYTHONUNBUFFERED: '1'
+    requirements: requirements.txt
+  resources:
+    cpu_count: 2
+    memory: 4Gb
+steps:
+  crawl:
+    enable_cache: false
+    parameters:
+      concurrent_requests: 8
+      max_pages: 500
+    settings:
+      resources:
+        cpu_count: 4
+        memory: 8Gb
+  transform:
+    parameters:
+      deduplicate: true
+  write_db:
+    parameters:
+      batch_size: 1000
+    settings:
+      resources:
+        cpu_count: 1
+        memory: 2Gb

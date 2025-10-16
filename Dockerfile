@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Define the command to run the crawler
-CMD ["python", "linkedin_crawler.py"]
+CMD ["python", "main.py"]
