@@ -1,2 +1,18 @@
-#note add all the docker requirements here
-requires is
+zenml
+pymupdf
+pymongo
+sqlmodel
+sqlalchemy
+sqlalchemy-utils
+passlib
+pillow
+tqdm
+requests
+beautifulsoup4
+lxml
+pytesseract
+torch
+torchvision
+torchaudio
+yt-dlp
+whisperx
